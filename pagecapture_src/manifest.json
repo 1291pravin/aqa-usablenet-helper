@@ -1,0 +1,87 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "name": "UsableNet PageCapture",
+  "version": "1.6",
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhZL8qv9ZoOMkBe+YBsqOF0QangGh237+6IxUKaV8YYax2LpA0l2BKGSK9JBesMQAKOn0AOfPETEjD9wthU8aILFhcC26YJD80U3ytymz2dlNkUsAlhWwPoKYjBqb2Ft2b6KtGI7AlrfAPRlRZwDfvp6aduU4Zd/odf9EX6F9ldn41g+nNnDGkR1ZV0dIhhPOcpZwl0LKnW49Aa6vz6jozs1PrwNNdmRbVgU99nMQfneVvttDOoZUGy5V/EdAOB3TJvgfP8Tju8YW4PeUQT3X7mFY0TVwIByrVtWWc5UJljhEq52U0fk0NYy1lqJvZQlWxdpCv5ddB8hOb6DRwhZ60QIDAQAB",
+  "description": "Capture web pages to be processed by UsableNet AQA",
+  "author": "UsableNet",
+  "icons": {
+    "128": "icons/icon-128x128.png"
+  },
+  "devtools_page":"devtools/devtools.html",
+  "options_ui": {
+    "page": "options/options.html"
+  },
+  "background": {
+    "service_worker": "background/background.bundle.js"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentscripts/overrides-init.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentscripts/snapshotter.bundle.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentscripts/contentscripts.bundle.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentscripts/msgFallback.js"
+      ]
+    }
+  ],
+  "commands": {
+    "capture-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Take a snapshot of the current page."
+    }
+  },
+  "permissions": [
+    "storage",
+    "webNavigation",
+    "scripting",
+    "downloads",
+    "pageCapture",
+    "unlimitedStorage",
+    "debugger"
+  ]
+}

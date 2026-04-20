@@ -1,0 +1,138 @@
+# Example journey spec — usable by BOTH Approach 1 (evaluate) and Approach 2 (PageCapture).
+#
+# The same YAML drives either runner:
+#   - Approach 1 scans the DOM at each `snapshot` step and POSTs to /a11y/tests/evaluate
+#   - Approach 2 fires the PageCapture keyboard shortcut at each `snapshot` step, then zips
+#
+# Env vars (${VAR} syntax) are resolved at runtime. Never put real credentials in this file.
+
+name: ecomm-logged-in-add-to-cart
+description: |
+  Logged-in user accepts cookie banner, opens mega menu, lands on PDP,
+  adds to cart, and confirms mini-cart state.
+
+# Which AQA ruleset to score against. Approach 1 passes this to /evaluate.
+# Approach 2 ignores it (ruleset is chosen in AQA UI when the flow runs).
+rulesetId: wcag-2.1-aa
+
+# Device / viewport. Approach 1 uses this for Playwright emulation.
+# Approach 2 uses it to pick the matching AQA deviceId after upload.
+device:
+  name: desktop-1440
+  viewport: { width: 1440, height: 900 }
+  userAgent: default
+
+# Where the journey starts.
+startUrl: https://shop.example.com/
+
+# Credentials — referenced by env var, never hardcoded.
+secrets:
+  username: ${TEST_USER_EMAIL}
+  password: ${TEST_USER_PASSWORD}
+
+# Default wait / timeout for steps.
+defaults:
+  stepTimeoutMs: 15000
+  networkIdleMs: 500
+
+# The journey itself. Each step has a `type` and type-specific fields.
+steps:
+
+  - type: goto
+    url: "{{startUrl}}"
+
+  # Cookie banner — accept it once so every downstream snapshot is clean.
+  - type: click
+    selector: "button:has-text('Accept all cookies')"
+    optional: true          # don't fail the run if the banner isn't there
+
+  - type: waitFor
+    networkIdle: true
+
+  - type: snapshot
+    label: home-logged-out
+    description: Homepage as anonymous, cookies accepted
+
+  # Log in.
+  - type: click
+    selector: "a[data-testid='header-account']"
+
+  - type: fill
+    selector: "input[name='email']"
+    value: "{{secrets.username}}"
+
+  - type: fill
+    selector: "input[name='password']"
+    value: "{{secrets.password}}"
+
+  - type: click
+    selector: "button[type='submit']"
+
+  - type: waitFor
+    selector: "[data-testid='account-name']"
+
+  - type: snapshot
+    label: home-logged-in
+
+  # Open the mega menu. THIS is the click-state a URL flow can't capture.
+  - type: hover
+    selector: "nav [data-menu='mens']"
+
+  - type: waitFor
+    selector: "nav [data-menu-panel='mens'][aria-expanded='true']"
+
+  - type: snapshot
+    label: mega-menu-mens-open
+    description: Mega menu open state — not reachable by URL alone
+
+  # Drill into a PLP, then a PDP.
+  - type: click
+    selector: "nav [data-menu-panel='mens'] a:has-text('Shoes')"
+
+  - type: waitFor
+    networkIdle: true
+
+  - type: snapshot
+    label: plp-mens-shoes
+
+  - type: click
+    selector: "[data-testid='product-card']:first-of-type a"
+
+  - type: waitFor
+    selector: "[data-testid='add-to-cart']"
+
+  - type: snapshot
+    label: pdp-first-product
+
+  # Add to cart, confirm mini-cart state.
+  - type: click
+    selector: "[data-testid='add-to-cart']"
+
+  - type: waitFor
+    selector: "[data-testid='mini-cart'][data-open='true']"
+
+  - type: snapshot
+    label: mini-cart-with-item
+    description: Cart-with-items — only exists after a click, not via URL
+
+# Output preferences.
+output:
+  # Approach 1
+  report:
+    formats: [json, html]
+    failOn: error        # error | warning | any | none
+  # Approach 2
+  bundle:
+    filename: "{{name}}-{{timestamp}}.zip"
+    keepScreenshots: true   # emit per-step PNGs for human review before upload
+
+# Optional: after the flow is uploaded to AQA (Approach 2), attach a keyboard test
+# and schedule it weekly. This block is read by the public-API bulk-create helper.
+postImport:
+  suiteId: ${AQA_SUITE_ID}
+  createKeyboardTest: true
+  scheduler:
+    cadence: weekly
+    dayOfWeek: monday
+    hour: 9
+  notificationGroupId: ${AQA_NOTIFY_GROUP_ID}

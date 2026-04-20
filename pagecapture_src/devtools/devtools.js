@@ -1,0 +1,1 @@
+chrome.devtools.panels.create("Page Capture","icons/icon-128x128.png","/devtools/panel.html",(()=>{}));
