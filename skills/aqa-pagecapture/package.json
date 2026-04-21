@@ -1,0 +1,14 @@
+{
+  "name": "aqa-pagecapture-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bundled Playwright helper for the aqa-pagecapture skill. Do not publish.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "playwright": "^1.49.0"
+  }
+}

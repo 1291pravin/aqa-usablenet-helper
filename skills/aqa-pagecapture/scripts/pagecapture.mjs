@@ -6,11 +6,11 @@
 // dispatch and DevTools-panel export dance are finicky enough that a real
 // Playwright launcher is simpler than coaxing the model through it each run.
 //
-// Usage: node scripts/pagecapture.mjs <journey.yaml> [--out <dir>] [--extension <path>]
+// Usage: node <skill-dir>/scripts/pagecapture.mjs <journey.yaml> [--out <dir>] [--extension <path>]
 //
 // Prereqs:
-//   - `npm i` has run (installs playwright + js-yaml)
-//   - `pagecapture_src/` is present in the repo (extension source)
+//   - `npm install` has run inside <skill-dir> (installs playwright + js-yaml)
+//   - `pagecapture_src/` sits alongside scripts/ (shipped with the skill)
 //   - A display is available — the extension does not work reliably headless.
 
 import { readFile, rename, mkdir, mkdtemp, readdir, stat } from 'node:fs/promises';
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import yaml from 'js-yaml';
 
-const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
+const SKILL_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 
 const args = parseArgv(process.argv.slice(2));
 if (!args._[0] || args.help) {
@@ -32,8 +32,8 @@ if (!args._[0] || args.help) {
 }
 
 const journeyPath = resolve(args._[0]);
-const outDir      = resolve(args.out       || join(REPO_ROOT, 'out'));
-const extPath     = resolve(args.extension || join(REPO_ROOT, 'pagecapture_src'));
+const outDir      = resolve(args.out       || join(SKILL_ROOT, 'out'));
+const extPath     = resolve(args.extension || join(SKILL_ROOT, 'pagecapture_src'));
 const captureWait = Number(args['capture-wait-ms'] || 2000);
 
 if (!existsSync(extPath))     die(`extension not found at ${extPath}`);

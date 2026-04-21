@@ -1,0 +1,35 @@
+{
+  "name": "aqa-usablenet-helper",
+  "version": "0.1.0",
+  "description": "Claude skill + CLI helpers that automate AQA accessibility coverage setup — discovers routes, proposes a test plan, and wires up flows/tests/schedulers via the AQA v3.1 public API.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "aqa-helper": "./scripts/aqa.mjs",
+    "aqa-pagecapture": "./scripts/pagecapture.mjs"
+  },
+  "scripts": {
+    "aqa": "node scripts/aqa.mjs",
+    "pagecapture": "node scripts/pagecapture.mjs"
+  },
+  "keywords": [
+    "aqa",
+    "accessibility",
+    "a11y",
+    "usablenet",
+    "claude",
+    "claude-code",
+    "skill"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pravin-tripathi/aqa-usablenet-helper"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "playwright": "^1.49.0",
+    "undici": "^6.21.0"
+  }
+}
