@@ -44,14 +44,14 @@ function parseBlock(lines, start, parentIndent) {
         const val = itemContent.slice(colonIdx + 1).trim();
         subObj[key] = parseValue(val);
 
-        // Check for continuation lines at deeper indent
+        // Check for continuation lines at deeper indent than the `- ` marker
         let j = i + 1;
         while (j < lines.length) {
           const subLine = lines[j];
           const subTrimmed = subLine.trimStart();
           if (!subTrimmed || subTrimmed.startsWith('#')) { j++; continue; }
           const subIndent = subLine.length - subTrimmed.length;
-          if (subIndent <= indent + 2) break;
+          if (subIndent <= indent) break;
           const subColon = subTrimmed.indexOf(':');
           if (subColon > 0) {
             const sk = subTrimmed.slice(0, subColon).trim();
@@ -142,6 +142,26 @@ function parseInlineObject(str) {
   return obj;
 }
 
+function stripInlineComment(str) {
+  let inQuote = false;
+  let quoteChar = '';
+  let braceDepth = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inQuote) {
+      if (ch === quoteChar) inQuote = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQuote = true; quoteChar = ch; continue; }
+    if (ch === '{') braceDepth++;
+    else if (ch === '}') braceDepth--;
+    if (ch === '#' && braceDepth === 0 && (i === 0 || /\s/.test(str[i - 1]))) {
+      return str.slice(0, i);
+    }
+  }
+  return str;
+}
+
 function smartSplit(str, delimiter) {
   const parts = [];
   let current = '';
@@ -176,6 +196,12 @@ function smartSplit(str, delimiter) {
 
 function parseValue(str) {
   if (str === '' || str === undefined) return '';
+
+  // Strip trailing inline comment (` # ...`) when not inside quotes/braces.
+  // A bare `#` at start-of-token is treated as comment; `#` mid-string is kept
+  // (important for URL fragments like `?q=foo#section`).
+  str = stripInlineComment(str).trim();
+
   if (str === 'true') return true;
   if (str === 'false') return false;
   if (str === 'null') return null;

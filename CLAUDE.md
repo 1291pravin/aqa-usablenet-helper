@@ -36,9 +36,9 @@ Documented in full in `skills/aqa-cover/SKILL.md`. The phases are:
 1. **Scout codebase** — grep for routes, auth gates, click-state components (mega menus, mini-carts, modals), selectors (`data-testid`, `aria-*`).
 2. **Explore live site** — use the agent's browser automation tools (playwright-cli skill or claude-in-chrome MCP) to visit ~10 pages and note click-state interactions.
 3. **Check AQA** — list rulesets + devices, verify the target suite exists (suite creation is UI-only).
-4. **Compose plan** — write `reports/<slug>/<ts>/plan.md` classifying each page as URL-flow, click-state flow, or skipped.
-5. **Approval gate** — show counts; user picks approve / dry-run / modify.
-6. **Execute** — URL flows via `aqa.mjs`, click-state flows via `pagecapture-e2e.mjs`. All mutations are idempotent (existing-name errors fall back to lookup).
+4. **Compose plan** — write `reports/<slug>/<ts>/plan.yaml` (structured, editable) plus one journey YAML per click-state flow. Schema in SKILL.md; example at `skills/aqa-cover/examples/plan.yaml`.
+5. **Approval gate** — summarize plan.yaml counts; user picks approve / dry-run / modify (edits plan.yaml directly).
+6. **Execute** — `node skills/aqa-cover/scripts/plan-run.mjs reports/<slug>/<ts>/plan.yaml`. Single command runs URL flows + click-state flows + tests + schedulers end-to-end. Idempotent via existing-name fallbacks. Pass `--dry-run` to preview.
 7. **Wrap up** — write `reports/<slug>/<ts>/NEXT-STEPS.md`.
 
 ## Common commands
@@ -46,24 +46,20 @@ Documented in full in `skills/aqa-cover/SKILL.md`. The phases are:
 Run from the repo root. Substitute `<skill-dir>` = `skills/aqa-cover` for the primary path.
 
 ```bash
-# API surface (help on no args)
+# Primary entry point: execute a plan.yaml end-to-end (idempotent)
+node skills/aqa-cover/scripts/plan-run.mjs reports/<slug>/<ts>/plan.yaml
+node skills/aqa-cover/scripts/plan-run.mjs reports/<slug>/<ts>/plan.yaml --dry-run
+
+# Low-level API surface (help on no args) — used by plan-run under the hood
 node skills/aqa-cover/scripts/aqa.mjs
 node skills/aqa-cover/scripts/aqa.mjs rulesets
 node skills/aqa-cover/scripts/aqa.mjs devices
 node skills/aqa-cover/scripts/aqa.mjs suites.get --suite $AQA_SUITE_ID
 
-# Create a URL flow + a11y test + weekly scheduler (idempotent)
+# Standalone single-flow shortcuts (what plan-run orchestrates per entry)
 node skills/aqa-cover/scripts/aqa.mjs flows.urlCreate \
   --suite $AQA_SUITE_ID --name "Home" --url https://example.com --device D1 \
   --log reports/example/applied.json
-node skills/aqa-cover/scripts/aqa.mjs tests.create \
-  --suite $AQA_SUITE_ID --name "Home a11y" \
-  --pack v2 --ruleset wcag22 --flow <FLOW_ID> \
-  --log reports/example/applied.json
-node skills/aqa-cover/scripts/aqa.mjs scheduler.create --test <TEST_ID> \
-  --log reports/example/applied.json
-
-# Click-state capture + auto-upload (headed Chromium required)
 node skills/aqa-cover/scripts/pagecapture-e2e.mjs <journey.yaml> --suite $AQA_SUITE_ID
 
 # First-time Playwright install for pagecapture-e2e

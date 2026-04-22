@@ -1,0 +1,33 @@
+# AQA coverage plan — the file the agent writes in Phase 4, the user reviews in
+# Phase 5, and `plan-run.mjs` executes in Phase 6. Re-runs are idempotent.
+
+suite: TS35353                       # required; must already exist in AQA UI
+target: https://fr.filorga.com       # optional; recorded for the report only
+device: D1                           # from `aqa.mjs devices`
+ruleset:
+  pack: v2                           # default v2
+  id: wcag22                         # default wcag22, fallback wcag21
+
+# Static pages testable via URL alone. Each produces:
+#   flows.urlCreate -> tests.create -> scheduler.create
+urlFlows:
+  - name: Home
+    url: https://fr.filorga.com/
+  - name: Product Detail
+    url: https://fr.filorga.com/products/skin-absolute-serum
+  - name: Search Results
+    url: https://fr.filorga.com/search?q=serum
+
+# Pages that need interaction (hover, click, fill) to reach the tested state.
+# Each entry references a separate journey YAML (same format pagecapture-e2e
+# accepts standalone). Produces: pagecapture capture + upload -> test -> scheduler.
+clickFlows:
+  - name: mega-menu
+    journey: ./mega-menu.yaml
+
+# Pages intentionally excluded — recorded here so reviewers see the reasoning.
+skip:
+  - route: /account
+    reason: auth-gated, no test credentials configured
+  - route: /checkout
+    reason: requires cart state and payment mock

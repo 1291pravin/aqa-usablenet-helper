@@ -22,6 +22,7 @@ You are the single skill that handles **all** AQA accessibility testing — URL 
 ├── resources/
 │   └── aqa-openapi.json           ← Full AQA v3.1 OpenAPI 3.1 spec (reference)
 └── scripts/
+    ├── plan-run.mjs               ← Reads plan.yaml and executes the full plan (Phase 6)
     ├── aqa.mjs                    ← AQA REST API helper (zero deps, Node 20+)
     ├── pagecapture-e2e.mjs        ← PageCapture automation script (uses official plugin)
     └── yaml-lite.mjs              ← Minimal YAML parser (zero deps)
@@ -161,126 +162,75 @@ Pick defaults:
 
 ---
 
-## Phase 4 — Compose the plan
+## Phase 4 — Compose the plan (plan.yaml)
 
-Write `reports/<suite-slug>/<timestamp>/plan.md`:
+The plan is a **structured YAML file** — not prose markdown. It's the single source of truth the user reviews, edits, and approves, and the single artifact `plan-run.mjs` executes in Phase 6.
 
-```markdown
-# AQA coverage plan — <suite-name> — <timestamp>
+Write `reports/<suite-slug>/<timestamp>/plan.yaml`:
 
-**Target:** <url>
-**Ruleset:** <rulesetId> (pack <packId>)
-**Device:** <deviceId>
-**Approach:** Fully automated (URL flows via API + click-state via PageCapture plugin)
+```yaml
+suite: <suiteId>                   # required; must already exist in AQA UI
+target: <url>                      # optional; recorded for the report only
+device: <deviceId>                 # from `aqa.mjs devices`
+ruleset:
+  pack: v2                         # default v2
+  id: wcag22                       # default wcag22, fallback wcag21
 
-## URL flows (via API — no browser needed)
-1. <name> — <url>
+urlFlows:                          # static pages testable via URL alone
+  - { name: Home, url: https://example.com/ }
+  - { name: Product Detail, url: https://example.com/products/foo }
 
-## Click-state flows (via PageCapture plugin — headed browser, automated upload)
-1. <name> — interaction description
+clickFlows:                        # pages needing hover/click/fill to reach state
+  - { name: mega-menu, journey: ./mega-menu.yaml }
 
-## Tests
-- One a11y test per flow (wcag22)
-- Weekly schedulers on all a11y tests
-- Note: keyboard tests are NOT supported for programmatically-created flows (API limitation)
-
-## Skipped
-- <route>: <reason>
+skip:                              # intentionally excluded, with reasoning
+  - { route: /account, reason: auth-gated, no creds }
 ```
 
+Each `clickFlows[].journey` points to a separate journey YAML (format documented below under "Journey YAMLs") sitting next to `plan.yaml`. Author one per click-state interaction.
+
+Reference example: `<skill-dir>/examples/plan.yaml` + `<skill-dir>/examples/mega-menu.yaml`.
+
 **Classification rules:**
-- Page reachable by URL alone → **URL flow**
-- Page needs interaction (hover, click, fill) to reach target state → **Click-state flow**
+- Page reachable by URL alone → **urlFlows**
+- Page needs interaction (hover, click, fill) to reach target state → **clickFlows** (+ journey YAML)
 - Auth-gated + no creds → **skip**
-- Every flow gets a11y test + weekly scheduler.
-- **Note:** keyboard tests are NOT supported for any programmatically-created flows (AQA API limitation). Skip `kbdTests.create`.
+- Every flow produces an a11y test + weekly scheduler automatically.
+- **Keyboard tests are NOT supported** for programmatically-created flows (AQA API limitation). Don't include them in the plan.
 
 ---
 
 ## Phase 5 — Approval gate
 
-Present the plan and ask the user:
-> I'll create in suite **<name>**: N URL flows, M click-state flows, P a11y tests, Q keyboard tests, R schedulers. Skipping K routes. Plan: `reports/<slug>/<ts>/plan.md`.
+Summarize `plan.yaml` inline for the user:
+> Plan at `reports/<slug>/<ts>/plan.yaml`: N URL flows, M click-state flows (→ N+M a11y tests + weekly schedulers), K skipped routes. Suite **<name>**, ruleset **<pack>/<id>**, device **<deviceId>**.
 
-Options: `Approve and execute` / `Dry-run only` / `Modify plan`
+Options: `Approve and execute` / `Dry-run` / `Modify plan`
 
-If `--dry-run`: stop here.
+If the user wants changes, edit `plan.yaml` directly and re-summarize. For dry-run, pass `--dry-run` to `plan-run.mjs` in Phase 6.
 
 ---
 
 ## Phase 6 — Execute
 
-Let `LOG=reports/<suite-slug>/<timestamp>/applied.json`.
-
-### 6A. URL flows (API only)
-
-For each URL flow in the plan:
+One command runs the entire plan:
 
 ```bash
-# Create flow
-node <skill-dir>/scripts/aqa.mjs flows.urlCreate \
-  --suite $AQA_SUITE_ID --name "<flow-name>" --url "<url>" --device <deviceId> \
-  --log $LOG
-
-# Create a11y test
-node <skill-dir>/scripts/aqa.mjs tests.create \
-  --suite $AQA_SUITE_ID --name "<flow-name> a11y" \
-  --pack v2 --ruleset wcag22 --flow $FLOW_ID \
-  --log $LOG
-
-# Create weekly scheduler
-node <skill-dir>/scripts/aqa.mjs scheduler.create --test $TEST_ID --log $LOG
+node <skill-dir>/scripts/plan-run.mjs reports/<suite-slug>/<timestamp>/plan.yaml
 ```
 
-### 6B. Click-state flows (PageCapture plugin)
+It iterates every entry in order:
 
-For each click-state flow, **author a journey YAML** and run:
+- **urlFlows** → `aqa.mjs flows.urlCreate` → `tests.create` → `scheduler.create`
+- **clickFlows** → `pagecapture-e2e.mjs <journey.yaml>` (launches headed Chromium with the PageCapture extension and uploads the ZIP) → look up the uploaded flow by name via `suites.get` → `tests.create` → `scheduler.create`
 
-```bash
-node <skill-dir>/scripts/pagecapture-e2e.mjs <journey.yaml> \
-  --suite $AQA_SUITE_ID
-```
+Every mutation is logged to `applied.json` next to `plan.yaml` (override with `--log <path>`). All operations are idempotent — re-running skips existing flows/tests/schedulers via `aqa.mjs`'s `existing_name` fallback.
 
-**Journey YAML format:**
-```yaml
-name: <suite-slug>/<flow-name>
-description: <what this flow captures>
-device:
-  viewport: { width: 1440, height: 900 }
-defaults:
-  stepTimeoutMs: 15000
-steps:
-  - { type: goto, url: "https://example.com/" }
-  - { type: createFlow }
-  - { type: click, selector: "button[id='truste-consent-button']", optional: true }
-  - { type: waitFor, timeout: 2000 }
-  - { type: snapshot, label: "Home Page" }
-  - { type: hover, selector: "nav button[aria-haspopup='true']" }
-  - { type: waitFor, timeout: 1000 }
-  - { type: snapshot, label: "Mega Menu Open" }
-```
+**Flags:**
+- `--dry-run` — print what would run without hitting AQA or launching a browser
+- `--log <path>` — override the default `applied.json` location
 
-Supported step types: `goto`, `click`, `hover`, `fill` (with `value`), `press` (with `key`), `waitFor` (with `selector` or `networkIdle: true` or `timeout: <ms>`), `createFlow`, `snapshot` (with `label`). Any step may add `optional: true`.
-
-Env-var interpolation: `${VAR}` in string values pulls from `process.env`.
-
-After `pagecapture-e2e.mjs` uploads the ZIP, poll for the new flow and create tests:
-
-```bash
-# Get the flow ID (it was just uploaded by the plugin)
-node <skill-dir>/scripts/aqa.mjs suites.get --suite $AQA_SUITE_ID
-# Find the newest flow ID from the response
-
-# Create a11y test
-node <skill-dir>/scripts/aqa.mjs tests.create \
-  --suite $AQA_SUITE_ID --name "<flow-name> a11y" \
-  --pack v2 --ruleset wcag22 --flow $FLOW_ID --log $LOG
-
-# Scheduler
-node <skill-dir>/scripts/aqa.mjs scheduler.create --test $TEST_ID --log $LOG
-```
-
-All commands are idempotent — safe to re-run.
+If any step fails, `plan-run.mjs` continues with the remaining entries and exits non-zero at the end with a summary of errors. Re-run to retry failures.
 
 ---
 
@@ -315,7 +265,11 @@ Respond to the user with:
 
 ## Authoring journey YAMLs
 
-When the user wants to cover a click-state page, author the journey YAML for them:
+Each `clickFlows[].journey` entry in `plan.yaml` points to one of these files. Author them alongside `plan.yaml`:
+
+**Supported step types:** `goto`, `click`, `hover`, `fill` (with `value`), `press` (with `key`), `waitFor` (with `selector` | `networkIdle: true` | `timeout: <ms>`), `createFlow`, `snapshot` (with `label`). Any step accepts `optional: true`. String values support `${ENV_VAR}` interpolation.
+
+**Authoring rules:**
 
 1. Ask what interaction to capture (e.g. "mega menu on hover", "mini-cart after add to cart").
 2. Use selectors harvested in Phase 1. Prefer `aria-*`, `data-testid`, `role` over bare CSS.
@@ -323,7 +277,8 @@ When the user wants to cover a click-state page, author the journey YAML for the
 4. Always dismiss cookie banners with `optional: true` early in the journey.
 5. Keep journeys short: 5-10 steps max.
 6. Place `snapshot` at each meaningful DOM state.
-7. Save journey YAMLs to `reports/<suite-slug>/<timestamp>/<flow-name>.yaml`.
+7. Save journey YAMLs to `reports/<suite-slug>/<timestamp>/<flow-name>.yaml` next to `plan.yaml`.
+8. The journey's internal `name:` field is what gets uploaded to AQA (after `/` → `-` sanitization). `plan-run.mjs` looks it up by that name after capture, so keep it stable.
 
 Example for a mega menu:
 ```yaml
