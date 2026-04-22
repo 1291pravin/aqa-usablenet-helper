@@ -1,138 +1,169 @@
 ---
 name: aqa-cover
-description: Given a URL and access to the app's codebase, propose and (on approval) execute a full AQA accessibility coverage plan — create a suite's URL flows, a11y tests, keyboard tests, and schedulers via the AQA v3.1 public API. Use when the user asks to "cover a site with AQA", "automate AQA setup", "create AQA flows and tests for <url>", or similar phrasing. Requires AQA_TEAMSLUG + AQA_API_KEY in environment. For click-state pages (mega menus, mini-carts), install the companion `aqa-pagecapture` skill.
+description: "Fully automated AQA accessibility agent. Given any URL, discovers pages, creates URL flows + click-state PageCapture flows, uploads ZIPs directly to AQA, creates a11y tests + keyboard tests + weekly schedulers — all without manual steps. Use when the user asks to 'cover a site with AQA', 'run accessibility tests on <url>', 'create AQA flows for <url>', or similar. Requires AQA_TEAMSLUG + AQA_API_KEY + AQA_SUITE_ID in environment."
 metadata:
   author: 1291pravin
-  version: "1.0.0"
+  version: "2.0.0"
 ---
 
-# aqa-cover
+# aqa-cover — Unified AQA Accessibility Agent
 
-You orchestrate AQA accessibility coverage for a target site. The user gives you a URL (and optional credentials + codebase path). You discover what pages and flows are worth testing, present one consolidated plan, and — after a single approval — execute it via this skill's bundled helper `scripts/aqa.mjs`.
+You are the single skill that handles **all** AQA accessibility testing — URL flows via the REST API **and** click-state flows via the official UsableNet PageCapture automation extension. No companion skills needed. No manual ZIP drag-drop. Everything is automated end-to-end.
+
+## Architecture
+
+```
+<skill-dir>/
+├── SKILL.md                       ← This file (AI agent instructions)
+├── AQAPageCapture/                ← Official UsableNet automation extension + plugin
+│   ├── extension/                 ← Chrome extension (externally_connectable)
+│   ├── plugin.playwright.js       ← Official Playwright SDK
+│   └── plugin.playwright.d.ts     ← TypeScript declarations
+├── resources/
+│   └── aqa-openapi.json           ← Full AQA v3.1 OpenAPI 3.1 spec (reference)
+└── scripts/
+    ├── aqa.mjs                    ← AQA REST API helper (zero deps, Node 20+)
+    ├── pagecapture-e2e.mjs        ← PageCapture automation script (uses official plugin)
+    └── yaml-lite.mjs              ← Minimal YAML parser (zero deps)
+```
+
+## Extending `aqa.mjs` with new endpoints
+
+`aqa.mjs` wires a curated subset of the AQA v3.1 API (rulesets, devices, suites, URL flows, a11y/keyboard tests, schedulers, evaluate). When a user needs an endpoint that isn't exposed yet — e.g. deleting a flow, triggering a test run, moving a run, listing run results, updating crawlers, user management — **read the OpenAPI spec at `<skill-dir>/resources/aqa-openapi.json` before writing new code.** It is the authoritative source.
+
+How to use it without loading 14k lines into context:
+
+1. Grep for the path you need: `^\s*"/a11y/suites/\{suiteId\}/flows/\{flowId\}/delete"` returns the exact line number.
+2. Read a ~80-line window around that line to get the method, params, request body schema, and response schema.
+3. Add a new subcommand to `aqa.mjs` following the existing pattern (`req(method, path, body, { form })`, idempotent error handling via `isExistingName` when applicable, `logApplied` for mutations).
+4. Remember the form-encoding quirk: `/a11y/tests/evaluate` and `/a11y/suites/{suiteId}/flows/url/create` use `application/x-www-form-urlencoded` — assume JSON for everything else unless the spec says otherwise. The `{ form: true }` option handles this.
+
+Quick index of paths worth knowing about (line numbers in `resources/aqa-openapi.json`):
+
+- `/a11y/suites` (906), `/a11y/suites/{suiteId}` (1049), `/a11y/suites/{suiteId}/flows/{flowId}` GET/update/delete (1208, 1577, 1753)
+- `/a11y/suites/{suiteId}/flows/{sourceType}/create` (1419) — covers `url`, and other source types the spec enumerates
+- `/a11y/suites/{suiteId}/crawlers/*` (1885–2430) — crawler CRUD, not yet wired
+- `/a11y/tests/{testId}/run` (3466), `/a11y/tests/runs/{runId}` GET (3714), `/stop` (3546), `/move` (3627)
+- `/a11y/tests/runs/{runId}/flows` + `/flows/{flowId}/issues` (3855, 5287) — fetching run results
+- `/a11y/keyboardTests/*` mirrors `/a11y/tests/*` structure (6678+)
+- `/users/*` (9778+) — user management, entirely unwired
+
+When in doubt, grep the spec; do not guess paths or payload shapes.
+
+## How it works
+
+**Two types of flows, both fully automated:**
+
+1. **URL flows** — static pages tested via API. No browser needed.
+   - `aqa.mjs flows.urlCreate` → `tests.create` → `scheduler.create`
+
+2. **Click-state flows** — pages needing interaction (mega menus, mini-carts, modals).
+   - `pagecapture-e2e.mjs` launches headed Chromium with the PageCapture extension
+   - The official `plugin.playwright.js` communicates via `chrome.runtime.sendMessage`
+   - Extension captures DOM + resources → `uploadZip()` sends ZIP directly to AQA
+   - Then `aqa.mjs` creates tests + schedulers for the uploaded flow
+
+**Key difference from the old approach:** The old `aqa-pagecapture` skill used a DevTools-panel extension that required keyboard shortcuts and manual ZIP export. This skill uses the **automation extension** with `externally_connectable` — ZIP upload is fully programmatic.
 
 ## Running scripts in this skill
 
-Throughout this document, `<skill-dir>` is the absolute path of the directory that holds this SKILL.md. You already know it because you read this file from that location. Typical install paths:
-
-- `<project>/.claude/skills/aqa-cover/` (Claude Code, project scope)
-- `<project>/.cursor/skills/aqa-cover/` (Cursor)
-- `<project>/.windsurf/skills/aqa-cover/` (Windsurf)
-- `~/.claude/skills/aqa-cover/` (Claude Code, global — `-g` flag)
-- same pattern under the user home for other agents
-
-Substitute the real absolute path wherever `<skill-dir>` appears below. Every script invocation looks like `node <skill-dir>/scripts/aqa.mjs …`. No `npm install` required — this skill has zero runtime dependencies (Node 20+ global `fetch` only).
+`<skill-dir>` = the absolute path of the directory containing this SKILL.md. Substitute it in all commands below.
 
 ## Prerequisites
 
-Before doing anything else, verify both. Stop immediately if either fails.
+Check in order. Stop on the first failure.
 
-1. **Environment:** `AQA_TEAMSLUG` and `AQA_API_KEY` must be set. If missing, tell the user:
-   > Please set `AQA_TEAMSLUG` and `AQA_API_KEY` in your environment (`.env` or shell profile), then re-run.
+1. **Environment variables.** All three must be set:
+   - `AQA_TEAMSLUG` — team slug (e.g. `colgate`)
+   - `AQA_API_KEY` — API key (sent as `X-Team` header)
+   - `AQA_SUITE_ID` — target suite ID (e.g. `TS35353`)
 
-2. **Node version:** Node 20+ (we use global `fetch`). A quick `node --version` check is enough. If older, tell the user to upgrade.
+   If missing, tell the user:
+   > Please set `AQA_TEAMSLUG`, `AQA_API_KEY`, and `AQA_SUITE_ID` in your environment.
 
-## Inputs
+2. **Node 20+.** Check `node --version`. Needed for global `fetch`.
 
-Parse the user's message for:
+3. **Playwright (for click-state flows only).** Check if `npx playwright --version` works. If not:
+   ```bash
+   npm install -g playwright && npx playwright install chromium
+   ```
+   Warn the user about the ~300 MB download. URL-only flows do NOT need Playwright.
 
-- `<url>` — required. The starting URL of the site to cover.
-- `--codebase <path>` — optional. Absolute path to the frontend repo. Defaults to the current working directory.
-- `--user <email>` — optional. Test account username.
-- `--pass-env <VAR>` — optional. Env var name holding the password. Never accept a raw password on the command line.
-- `--suite <name>` — optional. AQA suite name to populate. If omitted, propose one derived from the site hostname and confirm it with the user in the approval gate.
-- `--dry-run` — optional. Run phases 1–4 only; do not mutate AQA, do not produce ZIPs.
-
-Timestamp for this run: generate once as `YYYY-MM-DDTHH-MM-SS` and reuse. All outputs go to `reports/<suite-slug>/<timestamp>/` under the user's project directory (not inside the skill dir).
+4. **Suite must exist.** Verify with:
+   ```bash
+   node <skill-dir>/scripts/aqa.mjs suites.get --suite $AQA_SUITE_ID
+   ```
+   If it fails, tell the user to create the suite in the AQA UI first (API doesn't support suite creation).
 
 ---
 
 ## Phase 1 — Scout the codebase
 
-Purpose: understand what pages exist, which need auth, and what stable selectors the site uses, **without** launching a browser yet.
+Purpose: discover pages, selectors, and auth-gated routes without launching a browser.
 
-Use the tools the agent already has — file-reading/globbing/grepping. Keep this inline; no file output needed.
+Use the agent's file-reading/grepping tools. Keep this inline.
 
-1. **Detect the framework.** Check for `next.config.*`, `app/` + `pages/`, `remix.config.*`, `vite.config.*` with React Router, `vue.config.*` or `router/index.*`, `nuxt.config.*`, or a plain `index.html` with `<script>`. Record what you found.
+1. **Detect framework.** Look for `next.config.*`, `vite.config.*`, `vue.config.*`, `nuxt.config.*`, `remix.config.*`, Shopify Liquid templates (`*.liquid`), or plain HTML.
 
-2. **Enumerate routes.**
-   - Next.js App Router: find `app/**/page.{tsx,jsx,ts,js}` and derive URLs from the directory path.
-   - Next.js Pages Router: find `pages/**/*.{tsx,jsx,ts,js}` excluding `_*`.
-   - React Router / Vue Router: grep for `path: '...'` / `<Route path="..."/>` / route config arrays.
-   - Unknown framework: skip — the live crawl in phase 2 will discover pages.
+2. **Enumerate routes.** Framework-specific:
+   - Shopify/Liquid: grep for `{% schema %}`, template files, URL patterns in `routes/`
+   - Next.js: find `app/**/page.{tsx,jsx}` or `pages/**/*.{tsx,jsx}`
+   - Vue Router: grep for `path:` in router config
+   - Unknown: skip — Phase 2 will discover pages
 
-3. **Flag auth-gated routes.** Grep for `middleware.ts`, `withAuth`, `requireAuth`, `getServerSession`, route guards, or redirects to `/login`. Mark each route as `{ needsAuth: true | false | "unknown" }`.
+3. **Flag auth-gated routes.** Grep for `middleware`, `requireAuth`, route guards, `/login` redirects, `/account` paths.
 
-4. **Identify critical flows.** Grep component names and route paths for: `login|signin|auth`, `signup|register`, `checkout|cart|payment`, `search`, `account|profile|settings`. These are the candidate journeys most worth DOM + keyboard coverage.
+4. **Identify click-state components.** Grep for: `mega-menu|megamenu|MegaMenu`, `mini-cart|minicart|MiniCart`, `modal|Modal`, `dropdown|Dropdown`, `accordion|Accordion`. These are candidates for PageCapture flows.
 
-5. **Harvest stable selectors.** Run a single grep for `data-testid=|role=|aria-label=` and keep the top ~50 examples. Prefer these when authoring journeys — avoid bare CSS selectors where a testid exists.
+5. **Harvest selectors.** Grep for `data-testid=|role=|aria-label=|aria-haspopup=` — keep top ~50.
 
-Produce a concise inline summary — do not write files yet. Example shape:
-
+Output a concise inline summary:
 ```
-framework: next.js (app router)
-routes: 14 total (3 auth-gated)
-  - /              (public)
-  - /products/[id] (public)
-  - /cart          (auth-gated)
-  - /checkout      (auth-gated)
-  ...
-critical flows: login, checkout, search
-selectors: 47 data-testid usages harvested
+framework: shopify + vue 3 + vite
+routes: 12 public, 3 auth-gated
+click-state components: MegaMenu.vue, MiniCart.vue
+selectors: 38 aria-* usages
 ```
 
-If `--codebase` was not given and the current directory doesn't look like a frontend repo, skip this phase and note that you'll rely on live exploration only.
+If no codebase available, skip and note it.
 
 ---
 
 ## Phase 2 — Explore the live site
 
-Use whatever browser-automation skill your agent has available (e.g. `playwright-cli` in Claude Code, or the agent's built-in browser tool). Give it the URL and ask it to:
+Use the agent's browser tool to visit `<url>` and discover pages.
 
-1. Visit `<url>`.
-2. If `--user` + `--pass-env` were provided, attempt login using the auth flow inferred in phase 1 (or the obvious `/login` / `/signin` route).
-3. Walk the critical-flow entrypoints identified in phase 1. For each reachable page, capture a screenshot and note whether any **click-state** is present:
-   - Mega menus / nav dropdowns that open on hover or click.
-   - Modals (cookie banners, geo-region, newsletter).
-   - Mini-carts or badges that appear after an add-to-cart.
-   - Multi-step wizards past step 1.
-4. Stop after ~10 pages or 3 minutes of exploration — this is a scout, not a crawl.
+1. Visit the URL.
+2. Dismiss cookie consent if present (look for `#truste-consent-button`, `.cookie-accept`, etc.).
+3. Navigate key pages: home, product, search, cart, contact, store-locator, etc.
+4. Note which pages have click-state interactions (menus, carts, modals).
+5. Stop after ~10 pages.
 
-Record findings as an inline summary:
-
+Record findings inline:
 ```
-explored: 8 pages, 2 with click-state
-click-state pages:
-  - /         (mega-menu-opens-on-hover)
-  - /product  (mini-cart-after-add)
-auth: login succeeded, /cart reachable
+explored: 8 pages
+click-state: / (mega-menu on hover), /products/* (mini-cart after add-to-cart)
+skipped: /account (auth-gated)
 ```
-
-If creds were not provided and auth-gated routes exist, note which ones you're skipping.
 
 ---
 
 ## Phase 3 — Check AQA rulesets and devices
-
-Run in parallel:
 
 ```bash
 node <skill-dir>/scripts/aqa.mjs rulesets
 node <skill-dir>/scripts/aqa.mjs devices
 ```
 
-From rulesets, pick a default: prefer `wcag21` / `wcag21_aa` / any ID containing `aa`. From devices, pick a reasonable desktop entry (note its `id` — format `D<n>`).
-
-Also run `node <skill-dir>/scripts/aqa.mjs suites.ensure --name "<suite-name>"`. If it errors with `SUITE_MISSING`, tell the user:
-
-> The AQA public API does not expose suite creation. Please create the suite "<name>" once in the AQA UI, then re-run this command.
-
-…and stop. (Only suite creation requires manual UI setup; everything else is API-driven.)
+Pick defaults:
+- **Ruleset:** prefer `wcag22` from pack `v2`, fallback to `wcag21`
+- **Device:** pick a desktop entry (note `D<n>` ID)
 
 ---
 
 ## Phase 4 — Compose the plan
 
-Write `reports/<suite-slug>/<timestamp>/plan.md` (in the user's project, not inside the skill) laying out exactly what you propose to do. Use this structure:
+Write `reports/<suite-slug>/<timestamp>/plan.md`:
 
 ```markdown
 # AQA coverage plan — <suite-name> — <timestamp>
@@ -140,93 +171,116 @@ Write `reports/<suite-slug>/<timestamp>/plan.md` (in the user's project, not ins
 **Target:** <url>
 **Ruleset:** <rulesetId> (pack <packId>)
 **Device:** <deviceId>
+**Approach:** Fully automated (URL flows via API + click-state via PageCapture plugin)
 
-## URL flows (via public API)
-1. <name> — <url>   (e.g. "home — https://example.com/")
-2. ...
+## URL flows (via API — no browser needed)
+1. <name> — <url>
 
-## Click-state flows (requires companion aqa-pagecapture skill → manual ZIP upload)
-1. <name> — journey steps summary
-2. ...
+## Click-state flows (via PageCapture plugin — headed browser, automated upload)
+1. <name> — interaction description
 
-## Accessibility tests (one per flow)
-- <flow-name> a11y — ruleset <rulesetId>
-
-## Keyboard tests (one per flow)
-- <flow-name> kbd
-
-## Schedulers
-- Weekly, infinite — attached to each test
+## Tests
+- One a11y test per flow (wcag22)
+- Weekly schedulers on all a11y tests
+- Note: keyboard tests are NOT supported for programmatically-created flows (API limitation)
 
 ## Skipped
-- <route>: auth-gated, no creds provided
-- <route>: unreachable during explore
+- <route>: <reason>
 ```
 
-**Classification rules (apply per candidate page):**
-- URL-reachable without interaction → **URL flow** (public API, handled by this skill).
-- Requires click-state (menu open, cart populated, etc.) → **PageCapture ZIP** (handled by the `aqa-pagecapture` skill; if the user hasn't installed it, list these routes as deferred).
-- Auth-gated + no creds → **skip**, note it.
-- Every created flow gets one a11y test + one keyboard test + one weekly scheduler unless the user says otherwise.
-
-If click-state pages exist and `aqa-pagecapture` is not installed, include a one-line hint in plan.md:
-
-> Click-state flows require `npx skills add 1291pravin/aqa-usablenet-helper --skill aqa-pagecapture` (then re-run to include them).
+**Classification rules:**
+- Page reachable by URL alone → **URL flow**
+- Page needs interaction (hover, click, fill) to reach target state → **Click-state flow**
+- Auth-gated + no creds → **skip**
+- Every flow gets a11y test + weekly scheduler.
+- **Note:** keyboard tests are NOT supported for any programmatically-created flows (AQA API limitation). Skip `kbdTests.create`.
 
 ---
 
-## Phase 5 — Approval gate (single prompt)
+## Phase 5 — Approval gate
 
-Ask the user to choose one of: `Approve and execute` / `Dry-run only (stop here)` / `Modify plan`. Summarize the counts:
+Present the plan and ask the user:
+> I'll create in suite **<name>**: N URL flows, M click-state flows, P a11y tests, Q keyboard tests, R schedulers. Skipping K routes. Plan: `reports/<slug>/<ts>/plan.md`.
 
-> I'll create in suite **<name>**: N URL flows, N a11y tests, N keyboard tests, N weekly schedulers. Skipping K routes. M click-state pages deferred (need `aqa-pagecapture` skill). Plan file: reports/<suite-slug>/<timestamp>/plan.md.
+Options: `Approve and execute` / `Dry-run only` / `Modify plan`
 
-If `--dry-run` was set: skip this phase entirely and print a message that the plan was produced but not executed. Stop.
-
-If the user picks `Modify plan`: ask what they want changed, update plan.md, re-prompt.
+If `--dry-run`: stop here.
 
 ---
 
 ## Phase 6 — Execute
 
-Sequence, with the run's `reports/<suite-slug>/<timestamp>/applied.json` used as the log target for every mutation (pass `--log <path>` on each command). All commands are idempotent — safe to re-run.
-
 Let `LOG=reports/<suite-slug>/<timestamp>/applied.json`.
 
-1. **Ensure suite:**
-   ```bash
-   node <skill-dir>/scripts/aqa.mjs suites.ensure --name "<suite-name>"
-   ```
-   Capture the `id` as `$SUITE`.
+### 6A. URL flows (API only)
 
-2. **Create URL flows:** for each URL flow in the plan:
-   ```bash
-   node <skill-dir>/scripts/aqa.mjs flows.urlCreate \
-     --suite $SUITE --name "<flow-name>" --url "<url>" --device <deviceId> \
-     --log $LOG
-   ```
-   Capture each returned `id` as `$FLOW_<slug>`.
+For each URL flow in the plan:
 
-3. **Create a11y tests:** for each URL flow created in step 2:
-   ```bash
-   node <skill-dir>/scripts/aqa.mjs tests.create \
-     --suite $SUITE --name "<flow-name> a11y" \
-     --pack <packId> --ruleset <rulesetId> \
-     --flow $FLOW_<slug> \
-     --log $LOG
-   ```
-   Capture each `id` as `$TEST_<slug>`.
+```bash
+# Create flow
+node <skill-dir>/scripts/aqa.mjs flows.urlCreate \
+  --suite $AQA_SUITE_ID --name "<flow-name>" --url "<url>" --device <deviceId> \
+  --log $LOG
 
-4. **Create keyboard tests:** same shape as step 3 but `kbdTests.create`. Capture as `$KBD_<slug>`.
+# Create a11y test
+node <skill-dir>/scripts/aqa.mjs tests.create \
+  --suite $AQA_SUITE_ID --name "<flow-name> a11y" \
+  --pack v2 --ruleset wcag22 --flow $FLOW_ID \
+  --log $LOG
 
-5. **Attach weekly schedulers:** for each test + keyboard test:
-   ```bash
-   node <skill-dir>/scripts/aqa.mjs scheduler.create    --test $TEST_<slug> --log $LOG
-   node <skill-dir>/scripts/aqa.mjs scheduler.kbdCreate --test $KBD_<slug>  --log $LOG
-   ```
-   Default cadence `week`, infinite repeats.
+# Create weekly scheduler
+node <skill-dir>/scripts/aqa.mjs scheduler.create --test $TEST_ID --log $LOG
+```
 
-Stop and ask the user if any single mutation errors unexpectedly — don't retry the full plan. Idempotency means a re-run will pick up where you stopped.
+### 6B. Click-state flows (PageCapture plugin)
+
+For each click-state flow, **author a journey YAML** and run:
+
+```bash
+node <skill-dir>/scripts/pagecapture-e2e.mjs <journey.yaml> \
+  --suite $AQA_SUITE_ID
+```
+
+**Journey YAML format:**
+```yaml
+name: <suite-slug>/<flow-name>
+description: <what this flow captures>
+device:
+  viewport: { width: 1440, height: 900 }
+defaults:
+  stepTimeoutMs: 15000
+steps:
+  - { type: goto, url: "https://example.com/" }
+  - { type: createFlow }
+  - { type: click, selector: "button[id='truste-consent-button']", optional: true }
+  - { type: waitFor, timeout: 2000 }
+  - { type: snapshot, label: "Home Page" }
+  - { type: hover, selector: "nav button[aria-haspopup='true']" }
+  - { type: waitFor, timeout: 1000 }
+  - { type: snapshot, label: "Mega Menu Open" }
+```
+
+Supported step types: `goto`, `click`, `hover`, `fill` (with `value`), `press` (with `key`), `waitFor` (with `selector` or `networkIdle: true` or `timeout: <ms>`), `createFlow`, `snapshot` (with `label`). Any step may add `optional: true`.
+
+Env-var interpolation: `${VAR}` in string values pulls from `process.env`.
+
+After `pagecapture-e2e.mjs` uploads the ZIP, poll for the new flow and create tests:
+
+```bash
+# Get the flow ID (it was just uploaded by the plugin)
+node <skill-dir>/scripts/aqa.mjs suites.get --suite $AQA_SUITE_ID
+# Find the newest flow ID from the response
+
+# Create a11y test
+node <skill-dir>/scripts/aqa.mjs tests.create \
+  --suite $AQA_SUITE_ID --name "<flow-name> a11y" \
+  --pack v2 --ruleset wcag22 --flow $FLOW_ID --log $LOG
+
+# Scheduler
+node <skill-dir>/scripts/aqa.mjs scheduler.create --test $TEST_ID --log $LOG
+```
+
+All commands are idempotent — safe to re-run.
 
 ---
 
@@ -235,42 +289,73 @@ Stop and ask the user if any single mutation errors unexpectedly — don't retry
 Write `reports/<suite-slug>/<timestamp>/NEXT-STEPS.md`:
 
 ```markdown
-# Next steps — <suite-name> — <timestamp>
+# AQA Coverage Complete — <suite-name>
 
-## Done via API
+## Created
 - Suite: <id>
 - URL flows: N (IDs: ...)
-- a11y tests: N (IDs: ...)
-- Keyboard tests: N (IDs: ...)
-- Schedulers: weekly, infinite, attached to all 2N tests
-
-## Deferred (click-state)
-- <route>: needs PageCapture ZIP. Install `aqa-pagecapture` skill and re-run to cover.
+- Click-state flows: M (IDs: ...)
+- a11y tests: P (IDs: ...)
+- Keyboard tests: N/A (API limitation — only UI-created flows)
+- Schedulers: weekly, attached to all tests
 
 ## Skipped
 - <route>: <reason>
 
 ## Re-running
-This command is idempotent. Re-run with the same `--suite` to resume or pick up newly-added flows.
+All commands are idempotent. Re-run to pick up new flows or retry failed steps.
 ```
 
-Print the AQA dashboard URLs if you know the team's dashboard host — otherwise just the IDs.
+Respond to the user with:
+1. One-sentence summary.
+2. Path to `NEXT-STEPS.md`.
+3. Any warnings.
 
 ---
 
+## Authoring journey YAMLs
+
+When the user wants to cover a click-state page, author the journey YAML for them:
+
+1. Ask what interaction to capture (e.g. "mega menu on hover", "mini-cart after add to cart").
+2. Use selectors harvested in Phase 1. Prefer `aria-*`, `data-testid`, `role` over bare CSS.
+3. Always include `createFlow` before the first `snapshot`.
+4. Always dismiss cookie banners with `optional: true` early in the journey.
+5. Keep journeys short: 5-10 steps max.
+6. Place `snapshot` at each meaningful DOM state.
+7. Save journey YAMLs to `reports/<suite-slug>/<timestamp>/<flow-name>.yaml`.
+
+Example for a mega menu:
+```yaml
+name: filorga-fr/mega-menu
+description: Mega menu navigation click-state
+steps:
+  - { type: goto, url: "https://fr.filorga.com/" }
+  - { type: createFlow }
+  - { type: click, selector: "button[id='truste-consent-button']", optional: true }
+  - { type: waitFor, timeout: 2000 }
+  - { type: snapshot, label: "Home Page" }
+  - { type: hover, selector: "nav button[aria-haspopup='true']" }
+  - { type: waitFor, timeout: 1000 }
+  - { type: snapshot, label: "Mega Menu Open" }
+```
+
+---
+
+## Known limitations
+
+- **Suite creation** requires the AQA UI (API doesn't support it)
+- **Keyboard tests** are rejected by the AQA API for both URL flows AND PageCapture flows uploaded via the automation plugin (`invalid_flow_ids`). They only work with flows created through the AQA UI. Skip `kbdTests.create` — it will 400.
+- **Scheduler creation** may return HTTP 500 intermittently — `aqa.mjs` has retry logic
+- **Cookie banners** must be dismissed before PageCapture snapshots — always include as `optional` step
+- **Auth-gated pages** need credentials via `${ENV_VAR}` in journey YAML
+- **Click-state flows** require a headed browser (no headless) and a display
+- **Flow names must NOT contain forward slashes (`/`)** — slashes create subdirectory paths inside the ZIP `.aqaflow` filename, which AQA's server cannot extract. Use dashes (`-`) instead. The `pagecapture-e2e.mjs` script auto-sanitizes slashes → dashes.
+- **System Chrome required for PageCapture** — use `channel: 'chromium'` in Playwright launch options. The bundled Chromium may have issues with the `chrome.pageCapture` API.
+
 ## Defaults and reminders
 
-- **Never** write credentials to `plan.md`, `applied.json`, or any report file. `--pass-env` names an env var; the password never enters the conversation.
-- Slug naming: suite slug = kebab-case of suite name; flow names in AQA = `<suite>/<route-or-label>`; test names = `<flow-name> a11y` / `<flow-name> kbd`.
-- Every mutation command takes `--log <path>` and appends one JSON line. Use the same path for the whole run.
-- If `AQA_TEAMSLUG` / `AQA_API_KEY` are missing, `aqa.mjs` will refuse with exit code 2; pass that error straight to the user.
-- If the codebase discovery returns nothing because the user pointed `--codebase` at an empty or non-frontend directory, don't block — skip phase 1 and note it in the plan.
-
-## Ending the turn
-
-After phase 7, respond to the user with:
-1. One-sentence summary ("Created X URL flows and Y tests in suite <name>.").
-2. The path to `NEXT-STEPS.md`.
-3. Any warnings (skipped routes, deferred click-state pages).
-
-Nothing else.
+- Never write credentials to any report file
+- Slug naming: `<suite>-<route-or-label>` for flows (use dashes, never slashes), `<flow-name> a11y` for tests
+- All mutation commands take `--log <path>` and append JSON lines
+- If `AQA_TEAMSLUG` / `AQA_API_KEY` are missing, `aqa.mjs` exits with code 2

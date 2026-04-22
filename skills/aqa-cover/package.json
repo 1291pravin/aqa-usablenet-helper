@@ -1,0 +1,14 @@
+{
+  "name": "aqa-cover",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Unified AQA accessibility agent — URL flows + PageCapture click-state flows",
+  "type": "module",
+  "scripts": {
+    "aqa": "node scripts/aqa.mjs",
+    "pagecapture": "node scripts/pagecapture-e2e.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

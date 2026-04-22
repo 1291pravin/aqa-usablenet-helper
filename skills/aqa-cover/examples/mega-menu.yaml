@@ -1,0 +1,18 @@
+name: filorga-fr-mega-menu
+description: Mega menu navigation click-state capture
+device:
+  viewport: { width: 1440, height: 900 }
+defaults:
+  stepTimeoutMs: 15000
+steps:
+  - { type: goto, url: "https://fr.filorga.com/" }
+  - { type: click, selector: "button[id='truste-consent-button']", optional: true }
+  - { type: waitFor, timeout: 5000 }
+  - { type: click, selector: ".gigya-screen-dialog-close", optional: true }
+  - { type: press, key: "Escape", optional: true }
+  - { type: waitFor, timeout: 2000 }
+  - { type: createFlow }
+  - { type: snapshot, label: "Home Page" }
+  - { type: hover, selector: "nav button[aria-haspopup='true'] >> nth=0" }
+  - { type: waitFor, timeout: 2000 }
+  - { type: snapshot, label: "Mega Menu Open" }
